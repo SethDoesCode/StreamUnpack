@@ -1,0 +1,10 @@
+{
+	"authors": [
+		"Seth N"
+	],
+	"copyright": "Copyright © 2025, Nash Digital L.L.C.",
+	"description": "A Single-file library for parsing binary serialized data.",
+	"license": "MPL-2.0",
+	"name": "streamunpack",
+	"sourceFiles":["cbor.d"]
+}
