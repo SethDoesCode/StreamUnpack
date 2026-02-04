@@ -57,7 +57,7 @@ struct DataItem{
 	this(DataItem[] list){_type=DataType.List; _array=list;
 			debug{import std.stdio : writeln; writeln("val is ", _array);}}
 
-	this(ulong i, DataType type=DataType.UnsignedInteger){
+	this(ulong i, DataType type=DataType.UnsignedInteger){//TODO: Finish types available
 		switch(type){
 			case DataType.UnsignedInteger:
 			case DataType.NegativeInteger:
@@ -149,6 +149,16 @@ struct DataItem{
 	ulong opUnary(string s)(uint num) if(s=="+"){
 			return _number.ul+to!uint(num);
 	}
+	
+	void opOpAssign(string op: "~")(DataItem item){//TODO: Add map support
+		import std.stdio : writeln;
+		
+		writeln("WOAAAAH", op);
+	}
+	
+	DataItem last(){
+		return this._array[$-1];
+	}
 }
 
 ulong getUnsignedFromCBOR(ubyte[] inputArray, int startingPoint=0){
@@ -159,28 +169,23 @@ ulong getUnsignedFromCBOR(ubyte[] inputArray, int startingPoint=0){
 	Internal use
 	++/
 	ulong argument=0;
-	
-	debug{import std.stdio; writeln("input array starts ", inputArray[startingPoint]);}
 
-	if(inputArray.length==1){
-		debug{writeln("IT's ONE ARGUMENT");}
+	if(inputArray.length==1)
 		return inputArray[0] & 31;//TODO: Throw an error if this is over 23
-	}
-	debug{writeln("THERE'S AN ARGUMENT!", argument);}
 	
 	for(int i=cast(int)startingPoint+1; i<inputArray.length; i++){
 		argument=(argument << 8) + inputArray[i];
-		debug{writeln("Writing ", inputArray[i], " from ", argument);}
 		}
 
 	return argument;
 }
 
-ubyte[] _getCBORArgument(ref ubyte[] sourceArray, ulong startingPoint=0){
-	/++INTERNAL USE-FUNCTION+/
+ubyte[] _getCBORArgument(ref ubyte[] sourceArray, ulong startingPoint=0, bool includeAdditional=false){
+	/++INTERNAL USE-FUNCTION
+	Every function called by this needs to be rewritten probably. It now includes the additionalInformation from item 1, Initially, it did not.
+	+/
 	ubyte additionalInformation=sourceArray[startingPoint] & 31,
 			argumentSize=1;
-	debug{import std.stdio; writeln("\t\t\t", sourceArray[startingPoint], " iz ", additionalInformation);}
 	//TODO: Must implement infinite length items i.e. argument 31
 	
 	if(24<=additionalInformation && additionalInformation<=27)
@@ -189,8 +194,8 @@ ubyte[] _getCBORArgument(ref ubyte[] sourceArray, ulong startingPoint=0){
 		return [(additionalInformation)];
 	
 	startingPoint++;
-	debug{import std.stdio; writeln("For ", sourceArray, ", ", argumentSize, " is the argument size, starting from ", sourceArray[startingPoint]);}
-	return sourceArray[startingPoint .. startingPoint+argumentSize];
+	
+	return includeAdditional ? [additionalInformation] : [] ~ sourceArray[startingPoint .. startingPoint+argumentSize];
 }
 
 DataItem getCBORByteString(ref ubyte[] sourceArray, ulong startingPoint=0){
@@ -213,66 +218,74 @@ DataItem getCBORString(ref ubyte[] sourceArray, ulong startingPoint=0){
 
 DataItem fromCBOR(ubyte[] sourceArray, bool strict=false);
 
-DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
-	ubyte[] size=_getCBORArgument(sourceArray, startingPoint);
-	debug{import std.stdio; }
-	ulong itemCount=getUnsignedFromCBOR(size), itemIndex=0, itemLength;
-	startingPoint+=(itemCount>24) ? itemCount : 0;
-	startingPoint++;
-	ubyte[] result;
-	ulong[] subElements=[itemCount];
-	DataItem[] items;
-
-	while(itemCount>itemIndex){
-		ubyte[] itemArgument=_getCBORArgument(sourceArray, startingPoint);
-		ubyte currentType=sourceArray[startingPoint] >> 5;
-		debug{writeln("From starting point (", startingPoint, ") is ", sourceArray[startingPoint..$]);}
-		debug{writeln("BOOOING ", currentType);}
-		final switch(currentType){
-		case 0:
-		case 1://Check if type is unsigned or negative int
-			debug{writeln("WE are now on a number (", currentType, ")");}
-			debug{writeln("For the number ", itemArgument, " the length is ", itemArgument.length);}
-			startingPoint+=itemArgument.length-1;//Skip past the entire length of the number
-			subElements[$-1]--;//Deincriment the last element of the list that keeps track of embedded items in an array.
-			items~=DataItem(getUnsignedFromCBOR(itemArgument)+currentType, currentType ? DataType.NegativeInteger : DataType.UnsignedInteger);
-			itemIndex++;
-			break;
-		case 2:
-		case 3://Binary or UTF string
-			debug{writeln("THIS IS ", sourceArray[startingPoint]);}
-			DataItem str=getCBORString(sourceArray, startingPoint);
-			debug{writeln(str);}
-			items~=str;
-			ulong length=getUnsignedFromCBOR(itemArgument);
-			debug{writeln("the length of ", str, " is ", length);}
-			startingPoint+=(length>23 ? itemArgument.length : 0)+length;//TODO: Add support for unlimited length strings
-			subElements[$-1]--;
-			itemIndex++;
-			break;
-		case 4:
-		case 5:
-			debug{writeln("OH HERE IT GO!");}
-			items~=DataItem(getCBORList(sourceArray, startingPoint));
-			subElements~=getUnsignedFromCBOR(itemArgument);
-		}
-		debug{writeln("Result so far is ", items, " cause the starting point is ", startingPoint);}
-		if(subElements[$-1]<=0)
-			subElements=subElements[0..$-1];
-		startingPoint++;
-	}
-	
-	//debug{import std.stdio; writeln(sourceArray, " became ");}
-	return DataItem(items);
+ulong _getCBORListByteLength(ref ubyte[] sourceArray, ulong startingPoint){
+	ulong elementCount=sourceArray[startingPoint] & 31;
+	return 0;//TODO: Implement or delete
 }
 
-// DataItem unpackArray(ref ubyte[] sourceArray){
-// 	/**
-// 	This function takes a ref!
-// 	*/
-// 	//TODO: Implement
-// 	return DataItem();
-// }
+DataItem getDeepestLastItem(ref DataItem[] array){
+	ulong i=0;
+	bool atEnd=false;
+	DataItem currentElement;
+	while(!atEnd){
+		if(currentElement.last()._type==DataType.List)
+			currentElement=currentElement.last();
+		else
+			return currentElement;
+	}
+	
+	import core.exception : UnicodeException;//TODO Replace with real exceptions
+	throw new Exception("BYE");
+}
+
+DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
+	import std.range : popBack;
+	DataItem[] items;
+	ubyte[] argument=_getCBORArgument(sourceArray, startingPoint, true);
+	ulong itemIndex=0, itemDepth=0, index=startingPoint, length=getUnsignedFromCBOR(argument);
+	ulong[] depthList=[length];
+	
+	index++;
+	debug{import std.stdio;}
+	
+	while(itemIndex<length){
+		ubyte itemType=sourceArray[index] >> 5;
+		
+		argument=_getCBORArgument(sourceArray, index, true);
+		ulong argumentValue=getUnsignedFromCBOR(argument);
+		
+		final switch(itemType){
+			case 0:
+			case 1:
+				items~=DataItem(argumentValue);
+				index+=argument.length;
+				break;//TODO: REmove
+			case 2://TODO
+			case 3:
+				items~=getCBORString(sourceArray, index);
+				index+=argument.length+argumentValue;
+				break;
+			case 4://TODO
+			case 5://TODO
+			case 6:
+			case 7:
+				depthList~=argumentValue;//lengh would make most sense, total count is easier to keep track of though
+				length+=argumentValue;
+				index+=argument.length;
+				DataItem[] d;
+				items~=DataItem(d);
+				//goto endloop;
+			//default:
+			//	break;
+		}
+		itemIndex++;
+		if(depthList.length && depthList[$-1]==0)
+			depthList.popBack();//:)
+		debug{writeln("Depth: ", depthList);}
+		debug{writeln(itemIndex, "/", length, ": ", index);}
+	}
+	return DataItem(items);
+}
 
 DataItem unpackMap(ref ubyte[] sourceArray){
 	//TODO: Implement
@@ -283,7 +296,6 @@ DataItem fromCBOR(ubyte[] sourceArray, bool strict=false){//Refactor: Clean this
 
 	import std.math : pow;
 	import std.conv : ConvException, to;
-	debug{import std.stdio;}
 	DataType t;
 	DataItem[] list;
 
