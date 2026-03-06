@@ -1,7 +1,7 @@
 //Exception
 import core.exception : SwitchError;
 
-enum DataType : ubyte{
+ enum DataType : ubyte{
 	UnsignedInteger=0b000,
 	NegativeInteger=0b001,
 	ByteString=0b010,
@@ -20,11 +20,14 @@ union DataPrimitive{
 struct DataItem{
 	DataType _type;
 	DataPrimitive _number;
+	
+	DataItem *_parent;
 
 	string _str;//Apparently string cannot exist in the same union, so logic will be checking for what a type is and modifying/reading accordingly.
 	ubyte[] _bin_str;
+	
 	DataItem[] _array;
-	DataItem[string] _dynamic_map;//TODO: Find memory-efficient way to handle having types other than strings...
+	DataItem[DataItem] _dynamic_map;//TODO: Find memory-efficient way to handle having types other than strings...
 	//This would be compliant with the CBOR spec, which requires keys able to be part of any of the aforementioned types.
 
 	this(T)(T var){
@@ -54,8 +57,7 @@ struct DataItem{
 	this(double i){_type=DataType.Float;_number.d=i;}
 	this(ubyte[] i){_type=DataType.ByteString;_bin_str=i;}
 	this(string i){_type=DataType.String;_str=i;}
-	this(DataItem[] list){_type=DataType.List; _array=list;
-			debug{import std.stdio : writeln; writeln("val is ", _array);}}
+	this(DataItem[] list){_type=DataType.List; _array=list;}
 
 	this(ulong i, DataType type=DataType.UnsignedInteger){//TODO: Finish types available
 		switch(type){
@@ -74,10 +76,14 @@ struct DataItem{
 
 		_type=type;
 	}
+	
+	@property parent(){return _parent;};
+	@property parent(DataItem *parent){this._parent=parent;debug{import std.stdio; writeln("Parent is now ", *(this._parent), " of type ", _parent._type);}};
 
 	T raw(T)(){
 		import std.conv : to;
 		int scalar=1;
+		
 		T var;
 		static if(is(T==long) || is(T==int)){
 			switch(_type){
@@ -134,6 +140,19 @@ struct DataItem{
 				case DataType.List:
 					import std.array : join;
 					return to!string(this._array);
+				case DataType.Map:
+					string s="{";
+					s~=to!string(this._dynamic_map.keys.length);//TODO Delete
+					DataItem[] keys=this._dynamic_map.keys, values=this._dynamic_map.values;
+					debug{import std.stdio; writeln("NOPE");}
+					debug{writeln("This aint  ", keys.length);}
+					for(int i=0; i<keys.length; i++){
+						debug{import std.stdio; writeln("This is  ", s);}
+						s~=keys[i].to!(string)~":"~values[i].raw!(string)~", ";
+					}
+					s~="}";
+					s~=to!string(this._array);
+					return s;
 				default://TODO:Add map string
 					return null;
 			}
@@ -151,14 +170,88 @@ struct DataItem{
 	}
 	
 	void opOpAssign(string op: "~")(DataItem item){//TODO: Add map support
-		import std.stdio : writeln;
-		
-		writeln("WOAAAAH", op);
+		this._array~=item;
+		this.last().parent=&this;
+		// if(this._array.length && this._array.length%2==0 && this._type==DataType.Map)
+		// 	this.mapify();
 	}
 	
-	DataItem last(){
-		return this._array[$-1];
+	void opOpAssign(string op: "~")(DataItem key, DataItem value){//TODO: Add error for non-map
+		this.array~=item~value;
 	}
+	
+	ref DataItem last(){
+		DataItem* d=&(this._array[$-1]);
+		return *d;
+	}
+	
+	bool mapify(){
+		import std.range : popBack;
+		debug{import std.stdio; writeln("MAPIFIED ");}
+		if(!this._array.length){debug{writeln("MAP NOT NEEDED HERE!");}
+			return false;
+		} else if((this._array.length%2)!=0)
+			throw new Exception("Needs to be divisible by two. Got "~this.toString());
+		
+		this._type=DataType.Map;
+		for(int i=0; i<this._array.length; i+=2){
+			
+			//debug{import std.stdio; writeln("WOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOP", s);}
+			this._dynamic_map[this._array[i]]=this._array[i+1];//TODO: Remove items from the array.
+		}
+		//this._array.length=0;
+		
+		return true;
+	}
+	
+	bool isNumber() const @trusted{
+		import std.algorithm : canFind;
+		return ([DataType.UnsignedInteger, DataType.NegativeInteger, DataType.Float].canFind(this._type));
+	}
+	
+	bool opEquals(ref const DataItem item) const @trusted{
+		return true;//TEST 
+	}
+	
+	bool opEquals(long item) const @trusted{
+		int sign=1;
+		if(!this.isNumber)
+			return false;
+		else if(this._type==DataType.NegativeInteger)
+			sign=-1;
+		else if(this._type==DataType.Float)
+			return item==this._number.d;
+		return false;
+	}
+	
+	bool opEquals(ulong n) const @trusted{
+		if(this._type==DataType.UnsignedInteger)
+			return this._number.ul==n;
+		else if(this._type==DataType.Float)
+			return cast(ulong)this._number.d==n;
+		return false;
+	}
+	
+	bool opEquals(int n) @trusted{
+		return this.opEquals(cast(long)(n));
+	}
+	
+	bool opEquals(double n){
+		if(this._type==DataType.UnsignedInteger)
+			return this._number.ul==n;
+		else if(this._type==DataType.NegativeInteger)
+			return cast(double)(this._number.ul*-1)==n;
+		else if(this._type==DataType.Float)
+			return this._number.d==n;
+		return false;
+	}
+	
+	bool opEquals(string s){//TODO: Add binary string, list and map comparison
+		if(!this._type==DataType.String)
+			return false;
+		return this._str==s;
+	}
+	
 }
 
 ulong getUnsignedFromCBOR(ubyte[] inputArray, int startingPoint=0){
@@ -223,19 +316,25 @@ ulong _getCBORListByteLength(ref ubyte[] sourceArray, ulong startingPoint){
 	return 0;//TODO: Implement or delete
 }
 
-DataItem getDeepestLastItem(ref DataItem[] array){
-	ulong i=0;
-	bool atEnd=false;
-	DataItem currentElement;
-	while(!atEnd){
-		if(currentElement.last()._type==DataType.List)
-			currentElement=currentElement.last();
-		else
-			return currentElement;
+bool insertToLastItem(ref DataItem[] array, DataItem item, ulong depth/+=1+/, bool makeMap){
+	//TODO: Make this more memory safe
+	ulong d=0;
+	depth--;
+	DataItem* currentElement=&array[$-1];
+	DataItem* modified=&item;
+	//debug{import std.stdio; writeln("WE STARTED AT ", array, " with a depth of ", depth);}
+	while((*currentElement)._array.length && 
+		((*currentElement)._type==DataType.List || (*currentElement)._type==DataType.Map)/+ &&
+				(*currentElement).last()._type==DataType.List+/ && ++d<depth){
+		(currentElement)=(&currentElement.last());
 	}
+	//assert(item.toString()!="not", "Cannot squeeze why into "~currentElement.toString());//TODO: Remove
 	
-	import core.exception : UnicodeException;//TODO Replace with real exceptions
-	throw new Exception("BYE");
+	if(makeMap && currentElement._array.length && currentElement._array.length%2==0 && currentElement._type==DataType.Map)//BLAME
+		currentElement.mapify();
+	debug{import std.stdio; writeln("Inserting ", item, " to ", *currentElement, " with parent ", currentElement._parent);};
+	(*currentElement)~=item;
+	return true;
 }
 
 DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
@@ -245,51 +344,90 @@ DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
 	ulong itemIndex=0, itemDepth=0, index=startingPoint, length=getUnsignedFromCBOR(argument);
 	ulong[] depthList=[length];
 	
+	if(sourceArray[startingPoint] >> 5==5)
+		length*=2;
+	
 	index++;
 	debug{import std.stdio;}
 	
 	while(itemIndex<length){
 		ubyte itemType=sourceArray[index] >> 5;
-		
 		argument=_getCBORArgument(sourceArray, index, true);
 		ulong argumentValue=getUnsignedFromCBOR(argument);
+		DataItem item;
+		DataItem[] listItem;
 		
 		final switch(itemType){
 			case 0:
 			case 1:
-				items~=DataItem(argumentValue);
+				item=DataItem(argumentValue);
+				if(depthList.length>1)
+					insertToLastItem(items, item, depthList.length, false);
+				else
+					items~=item;
 				index+=argument.length;
 				break;//TODO: REmove
 			case 2://TODO
 			case 3:
-				items~=getCBORString(sourceArray, index);
+				item=getCBORString(sourceArray, index);
+				if(depthList.length>1)
+					insertToLastItem(items, item, depthList.length, false);//TODO: figure out depth
+				else
+					items~=item;
 				index+=argument.length+argumentValue;
 				break;
-			case 4://TODO
 			case 5://TODO
-			case 6:
-			case 7:
-				depthList~=argumentValue;//lengh would make most sense, total count is easier to keep track of though
+				argumentValue*=2;
+				item=DataItem(listItem);
+				item._type=DataType.Map;
 				length+=argumentValue;
 				index+=argument.length;
-				DataItem[] d;
-				items~=DataItem(d);
-				//goto endloop;
+				
+				if(depthList.length>1)
+					insertToLastItem(items, item, depthList.length, true);
+				else
+					items~=(item);
+					
+				item.mapify();
+				if(depthList.length>1)//This must be before appending, to offset the previous depth
+					depthList[$-1]--;
+				depthList~=argumentValue+1;//length would make most sense, total count is easier to keep track of though
+				
+		break;
+			case 4://TODO
+				item=DataItem(listItem);
+				item._type=DataType.List;
+				length+=argumentValue;
+				index+=argument.length;
+				
+				if(depthList.length>1)
+					insertToLastItem(items, item, depthList.length, false);
+				else
+					items~=(item);
+					
+				
+				if(depthList.length>1)//This must be before appending, to offset the previous depth
+					depthList[$-1]--;
+				depthList~=argumentValue+1;//length would make most sense, total count is easier to keep track of though
+				break;
+			case 6:
+			case 7:
 			//default:
 			//	break;
 		}
+		
+		if(item._array.length){}
+		
 		itemIndex++;
-		if(depthList.length && depthList[$-1]==0)
+		if(depthList.length && depthList[$-1]>0)
+			depthList[$-1]--;
+		while(depthList.length && depthList[$-1]==0)
 			depthList.popBack();//:)
 		debug{writeln("Depth: ", depthList);}
 		debug{writeln(itemIndex, "/", length, ": ", index);}
+		debug{writeln(items);}
 	}
 	return DataItem(items);
-}
-
-DataItem unpackMap(ref ubyte[] sourceArray){
-	//TODO: Implement
-	return DataItem();
 }
 
 DataItem fromCBOR(ubyte[] sourceArray, bool strict=false){//Refactor: Clean this up, get rid of recursion.
@@ -312,32 +450,37 @@ DataItem fromCBOR(ubyte[] sourceArray, bool strict=false){//Refactor: Clean this
 		case 4:
 			return getCBORList(sourceArray);
 		case 5:
-			DataItem item=list;
+			DataItem item=getCBORList(sourceArray);
+			item.mapify();
 			return item;
 		default:
 			return DataItem(0);//TODO: Change ASAP
 	}
-	//debug{writeln(array);}
 	return DataItem();//TODO Put an exception here?
 }
 
 int main(){
 	import std.stdio;;
-	writeln(fromCBOR([21]));
-	writeln("Number: ", fromCBOR([24, 94]));//94
-	writeln("Number: ", fromCBOR([24, 12]));//12
-	writeln("Number 256: ", fromCBOR([25, 1, 0]));//256
-	writeln("Number: ", fromCBOR([56, 255]));//-256
-	writeln("Number: ", fromCBOR([57, 1, 98]));//-355
-	writeln("Number 190055: ", fromCBOR([26, 0, 2, 230, 103]));//190055
-	writeln("\"Hello world!\"", fromCBOR([108, 72, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100, 33]));//"Hello world!"
-	writeln("Output: ",fromCBOR([112, 87, 111, 114, 107, 105, 110, 103, 33, 32, 45, 46, 94, 32, 49, 50, 51]));//"Working! -.^ 123"
-	writeln("Number 12860: ", fromCBOR([25, 50, 60]));
-	writeln(fromCBOR([25, 70, 1]));
-	writeln("From array: ", fromCBOR([131, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100, 24, 1]));//"hello", "My friend", 1
-	writeln("From map: ", fromCBOR([162, 97, 49, 104, 109, 97, 112, 32, 116, 101, 115, 116, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100])); // {"hello":"My friend", 1:"map test"}
-	writeln("From nested array: ", fromCBOR([132, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100, 1, 130, 104, 101, 109, 98, 101, 100, 100, 101, 100, 1])); // ["hello", "My friend", 1, ["embedded", 1]]
-	writeln("[1, 2, \"three\", 4, \"5\"]: ", fromCBOR([133, 1, 2, 101, 116, 104, 114, 101, 101, 4, 97, 53]));
-	writeln("[1337, \"L337\"]", fromCBOR([130, 25, 5, 57, 100, 49, 51, 51, 55]));
+	// writeln(fromCBOR([21]));
+	// writeln("Number: ", fromCBOR([24, 94]));//94
+	// writeln("Number: ", fromCBOR([24, 12]));//12
+	// writeln("Number 256: ", fromCBOR([25, 1, 0]));//256
+	// writeln("Number: ", fromCBOR([56, 255]));//-256
+	// writeln("Number: ", fromCBOR([57, 1, 98]));//-355
+	// writeln("Number 190055: ", fromCBOR([26, 0, 2, 230, 103]));//190055
+	// writeln("\"Hello world!\"", fromCBOR([108, 72, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100, 33]));//"Hello world!"
+	// writeln("Output: ",fromCBOR([112, 87, 111, 114, 107, 105, 110, 103, 33, 32, 45, 46, 94, 32, 49, 50, 51]));//"Working! -.^ 123"
+	// writeln("Number 12860: ", fromCBOR([25, 50, 60]));
+	// writeln(fromCBOR([25, 70, 1]));
+	// writeln("From array: ", fromCBOR([131, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100, 1]));//"hello", "My friend", 1
+	// writeln("From map: ", fromCBOR([162, 97, 49, 104, 109, 97, 112, 32, 116, 101, 115, 116, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100])); // {"hello":"My friend", 1:"map test"}
+	// writeln("From nested array: ", fromCBOR([132, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100, 1, 130, 104, 101, 109, 98, 101, 100, 100, 101, 100, 1])); // ["hello", "My friend", 1, ["embedded", 1]]
+	// writeln("[1, 2, \"three\", 4, \"5\"]: ", fromCBOR([133, 1, 2, 101, 116, 104, 114, 101, 101, 4, 97, 53]));
+	// writeln("[1337, \"L337\"]", fromCBOR([130, 25, 5, 57, 100, 49, 51, 51, 55]));
+	// writeln("WHAT IS ", fromCBOR([134, 1, 2, 3, 130, 4, 130, 5, 100, 98, 105, 110, 103, 100, 98, 105, 110, 103, 100, 98, 111, 110, 103]));//[1, 2, 3, [4, [5, "bing"]], "bing", "bong"]
+	// writeln("From map: ", fromCBOR([162, 97, 49, 104, 109, 97, 112, 32, 116, 101, 115, 116, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100])); // {"hello":"My friend", 1:"map test"}
+	DataItem d=fromCBOR([162, 97, 49, 162, 104, 101, 109, 98, 101, 100, 100, 101, 100, 99, 109, 97, 112, 99, 97, 110, 100, 161, 99, 119, 104, 121, 99, 110, 111, 116, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100]);
+	writeln("From nested map: ", d);//{"hello":"My friend", 1:{"embedded":"map", "and":{"why":"not"}}}
+	d=fromCBOR([162, 97, 49, 162, 104, 101, 109, 98, 101, 100, 100, 101, 100, 99, 109, 97, 112, 99, 97, 110, 100, 162, 99, 119, 104, 121, 99, 110, 111, 116, 100, 109, 111, 114, 101, 130, 98, 116, 111, 98, 103, 111, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100]);
 	return 0;
 }
