@@ -1,4 +1,5 @@
-//Exception
+fosis#!/usr/bin/env dub
+
 import core.exception : SwitchError;
 
  enum DataType : ubyte{
@@ -27,7 +28,7 @@ struct DataItem{
 	ubyte[] _bin_str;
 	
 	DataItem[] _array;
-	DataItem[DataItem] _dynamic_map;//TODO: Find memory-efficient way to handle having types other than strings...
+	//DataItem[DataItem] _dynamic_map;//TODO: Find memory-efficient way to handle having types other than strings...
 	//This would be compliant with the CBOR spec, which requires keys able to be part of any of the aforementioned types.
 
 	this(T)(T var){
@@ -77,8 +78,8 @@ struct DataItem{
 		_type=type;
 	}
 	
-	@property parent(){return _parent;};
-	@property parent(DataItem *parent){this._parent=parent;debug{import std.stdio; writeln("Parent is now ", *(this._parent), " of type ", _parent._type);}};
+	@property parent(){return _parent;};//TODO: COnsider removing
+	@property parent(DataItem *parent){this._parent=parent;/+debug{import std.stdio; writeln("Parent is now ", *(this._parent), " of type ", _parent._type);}+/};
 
 	T raw(T)(){
 		import std.conv : to;
@@ -91,7 +92,7 @@ struct DataItem{
 					scalar=-1;
 					goto case;
 				case DataType.UnsignedInteger://TODO: This whole section needs to have overflow checking and exceptions added.
-					/*debug{writeln("unsiGNED INTEGER");}*/return cast(T)(_number.ul)*scalar;
+					return cast(T)(_number.ul)*scalar;
 				case DataType.Float:
 					return cast(T)(_number.ul);
 				default:
@@ -100,14 +101,13 @@ struct DataItem{
 		} else static if(is(T==ulong) || is(T==uint)){
 			switch(_type){
 				case DataType.NegativeInteger:
-				case DataType.UnsignedInteger:
 					return cast(T)(_number.ul);
 				case DataType.Float:
 					return cast(T)_number.d;
+				case DataType.UnsignedInteger:
 				default:
-					return cast(T)(_number.ul);
+					return cast(T)(_number.ul);//Assume if they're grabbing an unsigned, they know what they want.
 			}
-			return cast(T)_number.ul;//Assume if they're grabbing an unsigned, they know what they want.
 		} else static if(is(T==double)){
 			switch(_type){
 				case DataType.NegativeInteger:
@@ -142,28 +142,29 @@ struct DataItem{
 					return to!string(this._array);
 				case DataType.Map:
 					string s="{";
-					s~=to!string(this._dynamic_map.keys.length);//TODO Delete
-					DataItem[] keys=this._dynamic_map.keys, values=this._dynamic_map.values;
-					debug{import std.stdio; writeln("NOPE");}
-					debug{writeln("This aint  ", keys.length);}
-					for(int i=0; i<keys.length; i++){
-						debug{import std.stdio; writeln("This is  ", s);}
-						s~=keys[i].to!(string)~":"~values[i].raw!(string)~", ";
+					if(!this._array.length)
+						return "{}";
+					else if(this._array.length%2==1)
+						return "{"~cast(string)this._array[0]._str~"}";
+					for(int i=0; i<_array.length; i+=2){
+						s~=this._array[i].toString()~":"~this._array[i+1].toString();
+						if(i!=_array.length-2)
+							s~=", ";
 					}
 					s~="}";
-					s~=to!string(this._array);
 					return s;
 				default://TODO:Add map string
 					return null;
 			}
 		}
-		return cast(T)var;
 		//throw new SwitchError("Reached end of funciton");//TODO: Change this to a more appropriate exception.
 	}
 
 	string toString(){
 		return this.raw!string();
 	}
+	
+	@property string tostring(){return toString();}
 
 	ulong opUnary(string s)(uint num) if(s=="+"){
 			return _number.ul+to!uint(num);
@@ -172,8 +173,6 @@ struct DataItem{
 	void opOpAssign(string op: "~")(DataItem item){//TODO: Add map support
 		this._array~=item;
 		this.last().parent=&this;
-		// if(this._array.length && this._array.length%2==0 && this._type==DataType.Map)
-		// 	this.mapify();
 	}
 	
 	void opOpAssign(string op: "~")(DataItem key, DataItem value){//TODO: Add error for non-map
@@ -186,21 +185,9 @@ struct DataItem{
 	}
 	
 	bool mapify(){
-		import std.range : popBack;
-		debug{import std.stdio; writeln("MAPIFIED ");}
-		if(!this._array.length){debug{writeln("MAP NOT NEEDED HERE!");}
-			return false;
-		} else if((this._array.length%2)!=0)
+		if((this._array.length%2)!=0)
 			throw new Exception("Needs to be divisible by two. Got "~this.toString());
-		
-		this._type=DataType.Map;
-		for(int i=0; i<this._array.length; i+=2){
-			
-			//debug{import std.stdio; writeln("WOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOP", s);}
-			this._dynamic_map[this._array[i]]=this._array[i+1];//TODO: Remove items from the array.
-		}
-		//this._array.length=0;
-		
+
 		return true;
 	}
 	
@@ -210,7 +197,7 @@ struct DataItem{
 	}
 	
 	bool opEquals(ref const DataItem item) const @trusted{
-		return true;//TEST 
+		return false;//TODO Right away 
 	}
 	
 	bool opEquals(long item) const @trusted{
@@ -252,6 +239,28 @@ struct DataItem{
 		return this._str==s;
 	}
 	
+	DataItem* opIndex(ulong i){
+		if(this._type==DataType.List)
+			return &this._array[i];//TODO: Consider convenience function for maps with ulong, also add string indexing
+		return  new DataItem("NULL");//Implement proper null
+	}
+	
+	DataItem* opIndex(DataItem item){
+		if(this._type==DataType.List)
+			return /+new DataItem(+/this[item.raw!ulong];
+		else if(this._type!=DataType.Map)
+			throw new Exception("Not array or list");//TODO: Implement string indexing by char
+		for(int i=0; i<this._array.length; i+=2)
+			if(this._array[i]==item){//debug{import std.stdio;writeln("L t");}//May have to just call raw
+				return &this._array[i+1];}
+		return new DataItem("NULL ITEM");//Implement proper null
+	}
+	
+	@property ulong length(){
+		if(this._type==DataType.List) return this._array.length;
+		else if(this._type==DataType.Map) return this._array.length/2;
+		return 1;
+	}
 }
 
 ulong getUnsignedFromCBOR(ubyte[] inputArray, int startingPoint=0){
@@ -282,13 +291,13 @@ ubyte[] _getCBORArgument(ref ubyte[] sourceArray, ulong startingPoint=0, bool in
 	//TODO: Must implement infinite length items i.e. argument 31
 	
 	if(24<=additionalInformation && additionalInformation<=27)
-		argumentSize <<= additionalInformation - 24;//If argumentSize>23, the rest is relevant, if it's that or under, it's actually the entire argument.
+		argumentSize <<= (additionalInformation - 24);//If argumentSize>23, the rest is relevant, if it's that or under, it's actually the entire argument.
 	else
 		return [(additionalInformation)];
-	
+		
 	startingPoint++;
 	
-	return includeAdditional ? [additionalInformation] : [] ~ sourceArray[startingPoint .. startingPoint+argumentSize];
+	return (includeAdditional ? [additionalInformation] : []) ~ sourceArray[startingPoint .. startingPoint+argumentSize];
 }
 
 DataItem getCBORByteString(ref ubyte[] sourceArray, ulong startingPoint=0){
@@ -296,17 +305,17 @@ DataItem getCBORByteString(ref ubyte[] sourceArray, ulong startingPoint=0){
 	Get CBOR Byte String.
 	Warning: This function does not yet support infinite length items
 	+/
-	ubyte[] array=_getCBORArgument(sourceArray, startingPoint);
-	ulong stringLength=getUnsignedFromCBOR(array, 0);
-	//startingPoint+=;
+	ubyte[] array=_getCBORArgument(sourceArray, startingPoint, true);
+	ulong stringLength=getUnsignedFromCBOR(array, 0);//TODO: LIterally to fix, just subtract 1 from the starting point instead.
+	startingPoint+=array.length-1;
 	//delete array;
+
 	
 	return DataItem(sourceArray[++startingPoint .. startingPoint+stringLength]);
 }
 
 DataItem getCBORString(ref ubyte[] sourceArray, ulong startingPoint=0){
-	import std.string : assumeUTF;
-	return DataItem(assumeUTF(getCBORByteString(sourceArray, startingPoint)._bin_str));//TODO: MAke this more efficient by use an intermediary function for these two.
+	return DataItem(cast(string)(getCBORByteString(sourceArray, startingPoint)._bin_str));//TODO: MAke this more efficient by use an intermediary function for these two.
 }
 
 DataItem fromCBOR(ubyte[] sourceArray, bool strict=false);
@@ -322,17 +331,12 @@ bool insertToLastItem(ref DataItem[] array, DataItem item, ulong depth/+=1+/, bo
 	depth--;
 	DataItem* currentElement=&array[$-1];
 	DataItem* modified=&item;
-	//debug{import std.stdio; writeln("WE STARTED AT ", array, " with a depth of ", depth);}
 	while((*currentElement)._array.length && 
 		((*currentElement)._type==DataType.List || (*currentElement)._type==DataType.Map)/+ &&
 				(*currentElement).last()._type==DataType.List+/ && ++d<depth){
 		(currentElement)=(&currentElement.last());
 	}
-	//assert(item.toString()!="not", "Cannot squeeze why into "~currentElement.toString());//TODO: Remove
 	
-	if(makeMap && currentElement._array.length && currentElement._array.length%2==0 && currentElement._type==DataType.Map)//BLAME
-		currentElement.mapify();
-	debug{import std.stdio; writeln("Inserting ", item, " to ", *currentElement, " with parent ", currentElement._parent);};
 	(*currentElement)~=item;
 	return true;
 }
@@ -342,10 +346,10 @@ DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
 	DataItem[] items;
 	ubyte[] argument=_getCBORArgument(sourceArray, startingPoint, true);
 	ulong itemIndex=0, itemDepth=0, index=startingPoint, length=getUnsignedFromCBOR(argument);
-	ulong[] depthList=[length];
 	
 	if(sourceArray[startingPoint] >> 5==5)
 		length*=2;
+	ulong[] depthList=[length];
 	
 	index++;
 	debug{import std.stdio;}
@@ -388,24 +392,22 @@ DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
 				else
 					items~=(item);
 					
-				item.mapify();
 				if(depthList.length>1)//This must be before appending, to offset the previous depth
 					depthList[$-1]--;
 				depthList~=argumentValue+1;//length would make most sense, total count is easier to keep track of though
+				break;
 				
-		break;
 			case 4://TODO
 				item=DataItem(listItem);
 				item._type=DataType.List;
 				length+=argumentValue;
 				index+=argument.length;
 				
-				if(depthList.length>1)
+				if(depthList.length>1) 
 					insertToLastItem(items, item, depthList.length, false);
 				else
 					items~=(item);
 					
-				
 				if(depthList.length>1)//This must be before appending, to offset the previous depth
 					depthList[$-1]--;
 				depthList~=argumentValue+1;//length would make most sense, total count is easier to keep track of though
@@ -415,8 +417,6 @@ DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
 			//default:
 			//	break;
 		}
-		
-		if(item._array.length){}
 		
 		itemIndex++;
 		if(depthList.length && depthList[$-1]>0)
@@ -451,36 +451,9 @@ DataItem fromCBOR(ubyte[] sourceArray, bool strict=false){//Refactor: Clean this
 			return getCBORList(sourceArray);
 		case 5:
 			DataItem item=getCBORList(sourceArray);
-			item.mapify();
+			item._type=DataType.Map;
 			return item;
 		default:
 			return DataItem(0);//TODO: Change ASAP
 	}
-	return DataItem();//TODO Put an exception here?
-}
-
-int main(){
-	import std.stdio;;
-	// writeln(fromCBOR([21]));
-	// writeln("Number: ", fromCBOR([24, 94]));//94
-	// writeln("Number: ", fromCBOR([24, 12]));//12
-	// writeln("Number 256: ", fromCBOR([25, 1, 0]));//256
-	// writeln("Number: ", fromCBOR([56, 255]));//-256
-	// writeln("Number: ", fromCBOR([57, 1, 98]));//-355
-	// writeln("Number 190055: ", fromCBOR([26, 0, 2, 230, 103]));//190055
-	// writeln("\"Hello world!\"", fromCBOR([108, 72, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100, 33]));//"Hello world!"
-	// writeln("Output: ",fromCBOR([112, 87, 111, 114, 107, 105, 110, 103, 33, 32, 45, 46, 94, 32, 49, 50, 51]));//"Working! -.^ 123"
-	// writeln("Number 12860: ", fromCBOR([25, 50, 60]));
-	// writeln(fromCBOR([25, 70, 1]));
-	// writeln("From array: ", fromCBOR([131, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100, 1]));//"hello", "My friend", 1
-	// writeln("From map: ", fromCBOR([162, 97, 49, 104, 109, 97, 112, 32, 116, 101, 115, 116, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100])); // {"hello":"My friend", 1:"map test"}
-	// writeln("From nested array: ", fromCBOR([132, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100, 1, 130, 104, 101, 109, 98, 101, 100, 100, 101, 100, 1])); // ["hello", "My friend", 1, ["embedded", 1]]
-	// writeln("[1, 2, \"three\", 4, \"5\"]: ", fromCBOR([133, 1, 2, 101, 116, 104, 114, 101, 101, 4, 97, 53]));
-	// writeln("[1337, \"L337\"]", fromCBOR([130, 25, 5, 57, 100, 49, 51, 51, 55]));
-	// writeln("WHAT IS ", fromCBOR([134, 1, 2, 3, 130, 4, 130, 5, 100, 98, 105, 110, 103, 100, 98, 105, 110, 103, 100, 98, 111, 110, 103]));//[1, 2, 3, [4, [5, "bing"]], "bing", "bong"]
-	// writeln("From map: ", fromCBOR([162, 97, 49, 104, 109, 97, 112, 32, 116, 101, 115, 116, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100])); // {"hello":"My friend", 1:"map test"}
-	DataItem d=fromCBOR([162, 97, 49, 162, 104, 101, 109, 98, 101, 100, 100, 101, 100, 99, 109, 97, 112, 99, 97, 110, 100, 161, 99, 119, 104, 121, 99, 110, 111, 116, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100]);
-	writeln("From nested map: ", d);//{"hello":"My friend", 1:{"embedded":"map", "and":{"why":"not"}}}
-	d=fromCBOR([162, 97, 49, 162, 104, 101, 109, 98, 101, 100, 100, 101, 100, 99, 109, 97, 112, 99, 97, 110, 100, 162, 99, 119, 104, 121, 99, 110, 111, 116, 100, 109, 111, 114, 101, 130, 98, 116, 111, 98, 103, 111, 101, 104, 101, 108, 108, 111, 105, 77, 121, 32, 102, 114, 105, 101, 110, 100]);
-	return 0;
 }
