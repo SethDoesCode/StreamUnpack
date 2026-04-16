@@ -1,4 +1,4 @@
-fosis#!/usr/bin/env dub
+#!/usr/bin/env dub
 
 import core.exception : SwitchError;
 
@@ -23,6 +23,7 @@ struct DataItem{
 	DataPrimitive _number;
 	
 	DataItem *_parent;
+	ulong[] _tags;
 
 	string _str;//Apparently string cannot exist in the same union, so logic will be checking for what a type is and modifying/reading accordingly.
 	ubyte[] _bin_str;
@@ -261,9 +262,21 @@ struct DataItem{
 		else if(this._type==DataType.Map) return this._array.length/2;
 		return 1;
 	}
+	
+	@property void tags(ulong[] tags){
+		this._tags=tags;
+	}
+	
+	@property ulong[] tags(){
+		return this._tags;
+	}
+	
+	void addTag(ulong tag){
+		this._tags~=tag;
+	}
 }
 
-ulong getUnsignedFromCBOR(ubyte[] inputArray, int startingPoint=0){
+ulong getUnsignedFromCBOR(ubyte[] inputArray, ulong startingPoint=0){
 	/++
 	This function gets the unsigned value of a CBOR integer, it has no concern for sign!
 	Additionally, it does not care for single length items, it will just return the same item.
@@ -346,6 +359,7 @@ DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
 	DataItem[] items;
 	ubyte[] argument=_getCBORArgument(sourceArray, startingPoint, true);
 	ulong itemIndex=0, itemDepth=0, index=startingPoint, length=getUnsignedFromCBOR(argument);
+	ulong[] tags;//Technically ulong is the highest a tag can be, but consider switching back to uint.
 	
 	if(sourceArray[startingPoint] >> 5==5)
 		length*=2;
@@ -364,7 +378,11 @@ DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
 		final switch(itemType){
 			case 0:
 			case 1:
-				item=DataItem(argumentValue);
+				item=DataItem(argumentValue+itemType);
+				if(itemType)
+					item._type=DataType.NegativeInteger;
+				item.tags=tags;
+				tags.length=0;
 				if(depthList.length>1)
 					insertToLastItem(items, item, depthList.length, false);
 				else
@@ -374,6 +392,8 @@ DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
 			case 2://TODO
 			case 3:
 				item=getCBORString(sourceArray, index);
+				item.tags=tags;
+				tags.length=0;
 				if(depthList.length>1)
 					insertToLastItem(items, item, depthList.length, false);//TODO: figure out depth
 				else
@@ -386,6 +406,9 @@ DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
 				item._type=DataType.Map;
 				length+=argumentValue;
 				index+=argument.length;
+				
+				item.tags=tags;
+				tags.length=0;
 				
 				if(depthList.length>1)
 					insertToLastItem(items, item, depthList.length, true);
@@ -403,6 +426,9 @@ DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
 				length+=argumentValue;
 				index+=argument.length;
 				
+				item.tags=tags;
+				tags.length=0;
+				
 				if(depthList.length>1) 
 					insertToLastItem(items, item, depthList.length, false);
 				else
@@ -413,6 +439,12 @@ DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
 				depthList~=argumentValue+1;//length would make most sense, total count is easier to keep track of though
 				break;
 			case 6:
+				tags~=argumentValue;
+				length+=argumentValue;
+				depthList[$-1]++;
+				index+=argument.length;
+				debug{writeln("w: ", depthList, length);}
+				break;
 			case 7:
 			//default:
 			//	break;
@@ -431,29 +463,114 @@ DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
 }
 
 DataItem fromCBOR(ubyte[] sourceArray, bool strict=false){//Refactor: Clean this up, get rid of recursion.
-
 	import std.math : pow;
 	import std.conv : ConvException, to;
 	DataType t;
 	DataItem[] list;
 
-	uint major=sourceArray[0] >> 5;//Major type is first 3 bits of the first argument
-	ubyte[] argument=_getCBORArgument(sourceArray);
+	ulong position=0;
+	ubyte major=sourceArray[position] >> 5;//Major type is first 3 bits of the first argument
+	ulong[] tags;
+	
+	ubyte[] argument=_getCBORArgument(sourceArray, position);
+	
+	while(major==6){
+		major=sourceArray[position] >> 5;
+		argument=_getCBORArgument(sourceArray, position);
+		tags~=getUnsignedFromCBOR(argument);
+		position+=argument.length;
+	}
+	
 	switch(major){
 		case 0:
 		case 1:
-			return DataItem(getUnsignedFromCBOR(sourceArray, 0)+major, major ? DataType.NegativeInteger : DataType.UnsignedInteger);
+			return DataItem(getUnsignedFromCBOR(sourceArray, position)+major, major ? DataType.NegativeInteger : DataType.UnsignedInteger);
 		case 2:
-			return getCBORByteString(sourceArray);
+			return getCBORByteString(sourceArray, position);
 		case 3:
-			return getCBORString(sourceArray);//DataItem();//TODO
+			return getCBORString(sourceArray, position);//DataItem();//TODO
 		case 4:
-			return getCBORList(sourceArray);
+			return getCBORList(sourceArray, position);
 		case 5:
-			DataItem item=getCBORList(sourceArray);
+			DataItem item=getCBORList(sourceArray, position);
 			item._type=DataType.Map;
 			return item;
+		case 7:
+			//TODO:Implement
 		default:
 			return DataItem(0);//TODO: Change ASAP
 	}
+}
+
+
+void main() {
+    import std.stdio;
+
+    struct TestCase {
+        string name;
+        ubyte[] data;
+        bool strict;
+    }
+
+    TestCase[] tests = [
+        // --- Major Type 0: Unsigned Integers ---
+        TestCase("Small Int (10)", [10], false),
+        TestCase("1-byte Int (25)", [24, 25], false),
+        TestCase("2-byte Int (500)", [25, 1, 244], false),
+
+        // --- Major Type 1: Negative Integers ---
+        TestCase("Negative Int (-6)", [37], false),
+        TestCase("Negative Int (-100)", [56, 99], false),
+
+        // --- Major Type 2: Byte Strings (ubyte[]) ---
+        TestCase("Empty ByteString", [64], false),
+        TestCase("ByteString [1, 2, 3]", [67, 1, 2, 3], false),
+
+        // --- Major Type 3: Text Strings (UTF-8) ---
+        TestCase("Text 'Hi'", [98, 72, 105], false),
+        TestCase("Text 'CBOR'", [100, 67, 66, 79, 82], false),
+
+        // --- Major Type 4: Arrays (DataItem[]) ---
+        TestCase("Simple Array [1, 2, 3]", [131, 1, 2, 3], false),
+        TestCase("Nested Array [1, [2, 3]]", [130, 1, 130, 2, 3], false),
+        TestCase("Mixed Nesting ['A', [5], -1]", [131, 97, 65, 129, 5, 32], false),
+
+        // --- Strict Mode Test ---
+        // This should pass if strict is false, but fail/throw if strict is true
+        TestCase("Trailing Garbage (Strict=False)", [10, 255, 255], false),
+        
+        TestCase("Trailing Garbage (Strict=True)", [10, 255, 255], true),// Array of Maps: [{"id": 1}, {"id": 2}]
+        TestCase("Array of Maps", 
+            [130, 161, 98, 105, 100, 1, 161, 98, 105, 100, 2]),
+
+        // Map with Array value: {"tags": [10, 20], "active": 1}
+        TestCase("Map with Array Value", 
+            [162, 100, 116, 97, 103, 115, 130, 10, 20, 102, 97, 99, 116, 105, 118, 101, 1]),
+
+        // Deep Mixed Nesting: {1: [[0], {"ok": 1}]}
+        TestCase("Deep Mixed Nesting", 
+            [161, 1, 130, 129, 0, 161, 98, 111, 107, 1]),
+            
+        // Map as a Key (Advanced CBOR): {[1]: "nestedKey"}
+        // Note: Check if your internal Map storage supports non-string keys!
+        TestCase("Array as Map Key", 
+            [161, 129, 1, 105, 110, 101, 115, 116, 101, 100, 75, 101, 121]),
+            
+		TestCase("Tagged Array", [216, 34, 130, 1, 2], false),
+
+    // Array containing a Tagged Integer
+    // 130 (Array len 2) + 1 (Int 1) + 193 (Tag 1) + 2 (Int 2)
+		TestCase("Array with Tagged Element", [130, 1, 193, 2], false)
+    ];
+
+    writeln("Running CBOR Decode Tests:\n");
+    foreach (t; tests) {
+        writef("Testing: %-30s | Data: %s", t.name, t.data);
+        try {
+            DataItem result = fromCBOR(t.data/*, t.strict*/);
+            writefln(" -> SUCCESS: %s", result);
+        } catch (Exception e) {
+            writefln(" -> FAILED: %s", e.msg);
+        }
+    }
 }
