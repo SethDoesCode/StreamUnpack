@@ -2,6 +2,8 @@
 
 import core.exception : SwitchError;
 
+alias CBORException=Exception;
+
  enum DataType : ubyte{
 	UnsignedInteger=0b000,
 	NegativeInteger=0b001,
@@ -134,8 +136,7 @@ struct DataItem{
 				case DataType.Float:
 					return to!string(_number.d);
 				case DataType.ByteString:
-					import std.string : assumeUTF;
-					return assumeUTF(_bin_str);//is this more appropriate than cast(string)?
+					return cast(string)(_bin_str);//is this more appropriate than cast(string)?
 				case DataType.String:
 					return _str;
 				case DataType.List:
@@ -162,6 +163,7 @@ struct DataItem{
 	}
 
 	string toString(){
+		debug{import std.stdio; writeln(this._tags);}
 		return this.raw!string();
 	}
 	
@@ -188,7 +190,6 @@ struct DataItem{
 	bool mapify(){
 		if((this._array.length%2)!=0)
 			throw new Exception("Needs to be divisible by two. Got "~this.toString());
-
 		return true;
 	}
 	
@@ -289,8 +290,7 @@ ulong getUnsignedFromCBOR(ubyte[] inputArray, ulong startingPoint=0){
 		return inputArray[0] & 31;//TODO: Throw an error if this is over 23
 	
 	for(int i=cast(int)startingPoint+1; i<inputArray.length; i++){
-		argument=(argument << 8) + inputArray[i];
-		}
+		argument=(argument << 8) + inputArray[i];}
 
 	return argument;
 }
@@ -299,9 +299,8 @@ ubyte[] _getCBORArgument(ref ubyte[] sourceArray, ulong startingPoint=0, bool in
 	/++INTERNAL USE-FUNCTION
 	Every function called by this needs to be rewritten probably. It now includes the additionalInformation from item 1, Initially, it did not.
 	+/
-	ubyte additionalInformation=sourceArray[startingPoint] & 31,
+	ubyte additionalInformation=sourceArray[startingPoint] & 31,//TODO: Must implement infinite length items i.e. argument 31
 			argumentSize=1;
-	//TODO: Must implement infinite length items i.e. argument 31
 	
 	if(24<=additionalInformation && additionalInformation<=27)
 		argumentSize <<= (additionalInformation - 24);//If argumentSize>23, the rest is relevant, if it's that or under, it's actually the entire argument.
@@ -319,10 +318,8 @@ DataItem getCBORByteString(ref ubyte[] sourceArray, ulong startingPoint=0){
 	Warning: This function does not yet support infinite length items
 	+/
 	ubyte[] array=_getCBORArgument(sourceArray, startingPoint, true);
-	ulong stringLength=getUnsignedFromCBOR(array, 0);//TODO: LIterally to fix, just subtract 1 from the starting point instead.
+	ulong stringLength=getUnsignedFromCBOR(array, 0);
 	startingPoint+=array.length-1;
-	//delete array;
-
 	
 	return DataItem(sourceArray[++startingPoint .. startingPoint+stringLength]);
 }
@@ -443,7 +440,6 @@ DataItem getCBORList(ref ubyte[] sourceArray, ulong startingPoint=0){
 				length+=argumentValue;
 				depthList[$-1]++;
 				index+=argument.length;
-				debug{writeln("w: ", depthList, length);}
 				break;
 			case 7:
 			//default:
@@ -503,74 +499,73 @@ DataItem fromCBOR(ubyte[] sourceArray, bool strict=false){//Refactor: Clean this
 }
 
 
-void main() {
-    import std.stdio;
+unittest{
+	import std.stdio : writeln;
+	import std.exception : assertThrown, assertNotThrown;
 
-    struct TestCase {
-        string name;
-        ubyte[] data;
-        bool strict;
-    }
+	// Helper to reduce repetition
+	void testDecode(string description, ubyte[] data, string expectedStr,
+					bool strict = false, bool shouldThrow = false)
+	{
+		if (shouldThrow) {
+			assertThrown!CBORException(fromCBOR(data, strict), description);
+			return;
+		}
 
-    TestCase[] tests = [
-        // --- Major Type 0: Unsigned Integers ---
-        TestCase("Small Int (10)", [10], false),
-        TestCase("1-byte Int (25)", [24, 25], false),
-        TestCase("2-byte Int (500)", [25, 1, 244], false),
+		DataItem item = fromCBOR(data, strict);
+		writeln(item);
+		assert(item.toString() == expectedStr,
+			   description ~ " failed. Got: " ~ item.toString() ~ " Expected: " ~ expectedStr);
+	}
 
-        // --- Major Type 1: Negative Integers ---
-        TestCase("Negative Int (-6)", [37], false),
-        TestCase("Negative Int (-100)", [56, 99], false),
+	// === Positive Integers (Type 0) ===
+	testDecode("uint 0",		  [0x00], "0");
+	testDecode("uint 10",		 [0x0A], "10");
+	testDecode("uint 100",		[0x18, 0x64], "100");
+	testDecode("uint 1000",	   [0x19, 0x03, 0xE8], "1000");
 
-        // --- Major Type 2: Byte Strings (ubyte[]) ---
-        TestCase("Empty ByteString", [64], false),
-        TestCase("ByteString [1, 2, 3]", [67, 1, 2, 3], false),
+	// === Negative Integers (Type 1) ===
+	testDecode("nint -1",	 	[0x20], "-1");   // Note: your raw!string may need tweaking for negative display
+	testDecode("nint -10",		[0x29], "-10");
+	testDecode("nint -100",		[0x38, 0x63], "-100");
 
-        // --- Major Type 3: Text Strings (UTF-8) ---
-        TestCase("Text 'Hi'", [98, 72, 105], false),
-        TestCase("Text 'CBOR'", [100, 67, 66, 79, 82], false),
+	// === Byte Strings (Type 2) - plain integer bytes ===
+	testDecode("byte empty",		[0x40], "");					// toString may return empty
+	testDecode("byte h'2A'",		[0x41, 0x2A], "[42]");		 // adjust if your toString for bytes is different
+	testDecode("byte h'010203'",	[0x43, 0x01, 0x02, 0x03], "[1, 2, 3]");
 
-        // --- Major Type 4: Arrays (DataItem[]) ---
-        TestCase("Simple Array [1, 2, 3]", [131, 1, 2, 3], false),
-        TestCase("Nested Array [1, [2, 3]]", [130, 1, 130, 2, 3], false),
-        TestCase("Mixed Nesting ['A', [5], -1]", [131, 97, 65, 129, 5, 32], false),
+	// === Text Strings (Type 3) ===
+	testDecode("text empty",	[0x60], "");
+	testDecode("text 'a'",		[0x61, 0x61], "a");
+	testDecode("text 'hello'",	[0x65, 0x68, 0x65, 0x6C, 0x6C, 0x6F], "hello");
 
-        // --- Strict Mode Test ---
-        // This should pass if strict is false, but fail/throw if strict is true
-        TestCase("Trailing Garbage (Strict=False)", [10, 255, 255], false),
-        
-        TestCase("Trailing Garbage (Strict=True)", [10, 255, 255], true),// Array of Maps: [{"id": 1}, {"id": 2}]
-        TestCase("Array of Maps", 
-            [130, 161, 98, 105, 100, 1, 161, 98, 105, 100, 2]),
+	// === Arrays (Type 4) with nesting ===
+	testDecode("array empty",	 [0x80], "[]");				  // depends on your List toString
+	testDecode("array [1,2,3]",  [0x83, 0x01, 0x02, 0x03], "[1, 2, 3]");
+	testDecode("array [-1,-2]",  [0x82, 0x20, 0x21], "[-1, -2]");
 
-        // Map with Array value: {"tags": [10, 20], "active": 1}
-        TestCase("Map with Array Value", 
-            [162, 100, 116, 97, 103, 115, 130, 10, 20, 102, 97, 99, 116, 105, 118, 101, 1]),
+	// Mixed + nested
+	testDecode("mixed array", [
+		0x84,
+		0x18, 0x64,					// 100
+		0x39, 0x03, 0xE7,			// -1000
+		0x42, 0xCA, 0xFE,			// byte string CA FE
+		0x65, 0x74, 0x65, 0x73, 0x74, 0x21   // "test!"
+	], "[100, -1000, [202, 254], test!]");   // adjust expected string to match your toString output
 
-        // Deep Mixed Nesting: {1: [[0], {"ok": 1}]}
-        TestCase("Deep Mixed Nesting", 
-            [161, 1, 130, 129, 0, 161, 98, 111, 107, 1]),
-            
-        // Map as a Key (Advanced CBOR): {[1]: "nestedKey"}
-        // Note: Check if your internal Map storage supports non-string keys!
-        TestCase("Array as Map Key", 
-            [161, 129, 1, 105, 110, 101, 115, 116, 101, 100, 75, 101, 121]),
-            
-		TestCase("Tagged Array", [216, 34, 130, 1, 2], false),
+	testDecode("nested arrays", [
+		0x82,
+		0x82, 0x01, 0x02,			  // [1, 2]
+		0x83, 0x03, 0x04, 0x05		 // [3, 4, 5]
+	], "[[1, 2], [3, 4, 5]]");
 
-    // Array containing a Tagged Integer
-    // 130 (Array len 2) + 1 (Int 1) + 193 (Tag 1) + 2 (Int 2)
-		TestCase("Array with Tagged Element", [130, 1, 193, 2], false)
-    ];
+	// === Strict mode error cases ===
+	testDecode("overlong uint 0 (strict)", [0x18, 0x00], "", true, true);   // should throw
+	testDecode("truncated array (strict)", [0x82, 0x01], "", true, true);
+	testDecode("invalid additional info (strict)", [0x1F], "", true, true);
 
-    writeln("Running CBOR Decode Tests:\n");
-    foreach (t; tests) {
-        writef("Testing: %-30s | Data: %s", t.name, t.data);
-        try {
-            DataItem result = fromCBOR(t.data/*, t.strict*/);
-            writefln(" -> SUCCESS: %s", result);
-        } catch (Exception e) {
-            writefln(" -> FAILED: %s", e.msg);
-        }
-    }
+	// Non-strict should not throw on these (or handle gracefully)
+	assertNotThrown(fromCBOR([0x18, 0x00], false));   // overlong 0
+
+	writeln("All CBOR unit tests passed!");
 }
